@@ -59,7 +59,7 @@ function unwrapDdbAttributeValue(value: unknown): unknown {
   return value;
 }
 
-function normalizeRawItem(item: Record<string, unknown>): Record<string, unknown> {
+export function normalizeRawItem(item: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(item)) {
     normalized[key] = unwrapDdbAttributeValue(value);
@@ -80,7 +80,7 @@ function parseNumber(value: unknown, fieldName: string): number {
   throw new Error(`Invalid number in ${fieldName}: ${String(value)}`);
 }
 
-function normalizeNotify(item: Record<string, unknown>): RuleNotify {
+export function normalizeNotify(item: Record<string, unknown>): RuleNotify {
   const type = (item.notificationType ?? item.notification_type) as string | undefined;
   const detail = item.notificationValue ?? item.notification_detail;
 
@@ -97,7 +97,7 @@ function normalizeNotify(item: Record<string, unknown>): RuleNotify {
   };
 }
 
-function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem {
+export function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem {
   const metadata = String(raw.metadata ?? "");
   const condition = String(raw.condition ?? "");
   if (!metadata.startsWith("condition")) {
@@ -146,7 +146,7 @@ function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem {
   return result;
 }
 
-function normalizeController(raw: Record<string, unknown>): RuleControllerItem {
+export function normalizeController(raw: Record<string, unknown>): RuleControllerItem {
   const metadata = String(raw.metadata ?? "");
   if (!metadata.startsWith("controller")) {
     throw new Error(`Invalid controller metadata: ${metadata}`);

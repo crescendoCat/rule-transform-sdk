@@ -16,13 +16,13 @@ The DynamoDB storage model and business-friendly object model can diverge over t
 ## Install
 
 ```bash
-npm i @YOUR_GITHUB_ID/rule-transform-sdk
+npm i @crescendoCat/rule-transform-sdk
 ```
 
 For GitHub Packages, consumer projects need `.npmrc`:
 
 ```ini
-@YOUR_GITHUB_ID:registry=https://npm.pkg.github.com
+@crescendoCat:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
 ```
 
@@ -44,7 +44,7 @@ npm run build
 
 ```ini
 # .npmrc (do not commit)
-@YOUR_GITHUB_ID:registry=https://npm.pkg.github.com
+@crescendoCat:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=YOUR_TOKEN
 ```
 

@@ -7,7 +7,7 @@ describe("rule-transform-sdk", () => {
     const items: RuleItem[] = [
       { ruleId: "rule-1", metadata: "name", name: "High Temp" },
       { ruleId: "rule-1", metadata: "owner", ownerId: "owner-1" },
-      { ruleId: "rule-1", metadata: "ruleMode", value: "and" },
+      { ruleId: "rule-1", metadata: "ruleMode", value: "all" },
       { ruleId: "rule-1", metadata: "minTriggerDuration", value: 300000 },
       {
         ruleId: "rule-1",
@@ -39,7 +39,7 @@ describe("rule-transform-sdk", () => {
 
     expect(result.data.Id).toBe("rule-1");
     expect(result.data.notify?.notificationType).toBe("line");
-    expect(result.data.controllers["controller-1"]).toBe(120);
+    expect(result.data.controllers.some((controller) => controller.controllerId === "controller-1" && controller.value === 120)).toBe(true);
     expect(result.data.conditions.length).toBe(1);
   });
 
@@ -47,7 +47,7 @@ describe("rule-transform-sdk", () => {
     const source: RuleItem[] = [
       { ruleId: "rule-2", metadata: "name", name: "Low Moisture" },
       { ruleId: "rule-2", metadata: "owner", ownerId: "owner-2" },
-      { ruleId: "rule-2", metadata: "ruleMode", value: "or" },
+      { ruleId: "rule-2", metadata: "ruleMode", value: "any" },
       { ruleId: "rule-2", metadata: "minTriggerDuration", value: 0 },
       {
         ruleId: "rule-2",

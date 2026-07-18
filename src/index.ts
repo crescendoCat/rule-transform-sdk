@@ -146,6 +146,35 @@ function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem {
   return result;
 }
 
+function normalizeController(raw: Record<string, unknown>): RuleControllerItem {
+  const metadata = String(raw.metadata ?? "");
+  if (!metadata.startsWith("controller")) {
+    throw new Error(`Invalid controller metadata: ${metadata}`);
+  }
+
+  const fromMetadata = metadata.length > 11 ? metadata.slice(11) : "";
+  const controllerId = fromMetadata || String(raw.controllerId ?? "");
+  if (!controllerId) {
+    throw new Error("Controller metadata missing controllerId");
+  }
+
+  const result: RuleControllerItem = {
+    ruleId: String(raw.ruleId ?? ""),
+    metadata,
+    controllerId,
+    value: parseNumber(raw.value, "controller.value")
+  };
+
+  if (raw.controllerName != null) {
+    result.controllerName = String(raw.controllerName);
+  }
+  if (raw.activate != null) {
+    result.activate = Boolean(raw.activate);
+  }
+
+  return result;
+}
+
 export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
   try {
     if (!Array.isArray(items) || items.length === 0) {
@@ -164,7 +193,7 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
       conditions: [],
       ruleMode: "all",
       owner: null,
-      controllers: {}
+      controllers: []
     };
 
     for (const item of items) {
@@ -216,12 +245,8 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
       }
 
       if (metadata.startsWith("controller")) {
-        const controllerId = metadata.slice(11);
-        const controller = raw as unknown as RuleControllerItem;
-        const isInactive = controller.activate != null && controller.activate === false;
-        if (!isInactive) {
-          rule.controllers[controllerId] = parseNumber(raw.value, "controller.value");
-        }
+        const normalizedControllerObject = normalizeController(raw);
+        rule.controllers.push(normalizedControllerObject);
       }
     }
 
@@ -301,13 +326,32 @@ export function toDdbItems(ruleObject: RuleObject): TransformResult<RuleItem[]> 
       items.push(conditionItem);
     });
 
-    Object.entries(ruleObject.controllers).forEach(([controllerId, value]) => {
-      items.push({
+    ruleObject.controllers.forEach((controller, index) => {
+      const controllerId =
+        controller.controllerId ??
+        (String(controller.metadata ?? "").startsWith("controller-")
+          ? String(controller.metadata).slice(11)
+          : "");
+
+      if (!controllerId) {
+        throw new Error(`controllers[${index}] missing controllerId`);
+      }
+
+      const controllerItem: RuleControllerItem = {
         ruleId,
         metadata: `controller-${controllerId}`,
         controllerId,
-        value
-      });
+        value: parseNumber(controller.value, `controllers[${index}].value`)
+      };
+
+      if (controller.controllerName != null) {
+        controllerItem.controllerName = String(controller.controllerName);
+      }
+      if (controller.activate != null) {
+        controllerItem.activate = Boolean(controller.activate);
+      }
+
+      items.push(controllerItem);
     });
 
     return { ok: true, data: items };
@@ -342,8 +386,29 @@ export function validateRuleObject(ruleObject: unknown): ValidationResult {
     });
   }
 
-  if (!rule.controllers || typeof rule.controllers !== "object") {
-    errors.push("RuleObject.controllers must be an object");
+  if (!Array.isArray(rule.controllers)) {
+    errors.push("RuleObject.controllers must be an array");
+  }
+
+  if (Array.isArray(rule.controllers)) {
+    rule.controllers.forEach((controller, index) => {
+      if (!controller || typeof controller !== "object") {
+        errors.push(`controllers[${index}] must be an object`);
+        return;
+      }
+
+      const metadata = String(controller.metadata ?? "");
+      const derivedControllerId =
+        controller.controllerId ?? (metadata.startsWith("controller-") ? metadata.slice(11) : "");
+
+      if (!derivedControllerId) {
+        errors.push(`controllers[${index}] missing controllerId`);
+      }
+
+      if (!Number.isFinite(Number(controller.value))) {
+        errors.push(`controllers[${index}] invalid value`);
+      }
+    });
   }
 
   return { ok: errors.length === 0, errors };
@@ -356,7 +421,7 @@ export function normalizeRuleObject(ruleObject: RuleObject): RuleObject {
     lastTriggerValue: ruleObject.lastTriggerValue instanceof Date ? ruleObject.lastTriggerValue : null,
     ruleMode: ruleObject.ruleMode === "any" ? "any" : "all",
     owner: ruleObject.owner ?? null,
-    controllers: { ...(ruleObject.controllers ?? {}) },
+    controllers: [...(ruleObject.controllers ?? [])],
     conditions: [...(ruleObject.conditions ?? [])]
   };
 }

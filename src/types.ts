@@ -166,8 +166,8 @@ export interface RuleObject {
   conditions: RuleConditionItem[];
   /** Notification configuration for this rule. */
   notify?: RuleNotify;
-  /** Mapping of controller id to configured numeric value. */
-  controllers: Record<string, number>;
+  /** All controllers associated with this rule. */
+  controllers: RuleControllerItem[];
   /** Condition aggregation mode. */
   ruleMode: "any" | "all";
   /** Owner id if assigned; otherwise null. */

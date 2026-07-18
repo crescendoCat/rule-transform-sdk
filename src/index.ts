@@ -13,6 +13,59 @@ import type {
 const CONDITION_SET = new Set([">", "<", "=", ">=", "<=", "!=", "no-data"]);
 const CONDITION_TYPE_SET = new Set(["Continual", "Duration", "-1"]);
 const CONDITION_UNIT_SET = new Set(["Percent", "Times"]);
+const DDB_ATTRIBUTE_KEYS = new Set(["S", "N", "BOOL", "NULL", "M", "L", "SS", "NS", "B", "BS"]);
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isDdbAttributeValue(value: unknown): value is Record<string, unknown> {
+  if (!isObject(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  const key = keys[0];
+  if (!key) return false;
+  return DDB_ATTRIBUTE_KEYS.has(key);
+}
+
+function unwrapDdbAttributeValue(value: unknown): unknown {
+  if (!isDdbAttributeValue(value)) return value;
+
+  if ("S" in value) return value.S;
+  if ("N" in value) {
+    const n = Number(value.N);
+    return Number.isNaN(n) ? value.N : n;
+  }
+  if ("BOOL" in value) return value.BOOL;
+  if ("NULL" in value) return null;
+  if ("M" in value && isObject(value.M)) {
+    const mapped: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value.M)) {
+      mapped[key] = unwrapDdbAttributeValue(child);
+    }
+    return mapped;
+  }
+  if ("L" in value && Array.isArray(value.L)) {
+    return value.L.map((child) => unwrapDdbAttributeValue(child));
+  }
+  if ("SS" in value && Array.isArray(value.SS)) return value.SS;
+  if ("NS" in value && Array.isArray(value.NS)) {
+    return value.NS.map((entry) => {
+      const n = Number(entry);
+      return Number.isNaN(n) ? entry : n;
+    });
+  }
+
+  return value;
+}
+
+function normalizeRawItem(item: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item)) {
+    normalized[key] = unwrapDdbAttributeValue(value);
+  }
+  return normalized;
+}
 
 function fail<T>(...errors: string[]): TransformResult<T> {
   return { ok: false, errors };
@@ -99,7 +152,7 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
       return fail("Input items must be a non-empty array");
     }
 
-    const first = items[0] as unknown as Record<string, unknown>;
+    const first = normalizeRawItem(items[0] as unknown as Record<string, unknown>);
     const ruleId = String(first.ruleId ?? "");
     if (!ruleId) return fail("Missing ruleId in input items");
 
@@ -115,7 +168,7 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
     };
 
     for (const item of items) {
-      const raw = item as unknown as Record<string, unknown>;
+      const raw = normalizeRawItem(item as unknown as Record<string, unknown>);
       const metadata = String(raw.metadata ?? "");
 
       if (String(raw.ruleId ?? "") !== ruleId) {

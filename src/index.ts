@@ -162,7 +162,7 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
       lastTriggerValue: null,
       name: "",
       conditions: [],
-      ruleMode: "and",
+      ruleMode: "all",
       owner: null,
       controllers: {}
     };
@@ -208,7 +208,7 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
 
       if (metadata === "ruleMode") {
         const value = String(raw.value ?? "");
-        if (value !== "or" && value !== "and") {
+        if (value !== "all" && value !== "any") {
           throw new Error(`Invalid ruleMode: ${value}`);
         }
         rule.ruleMode = value;
@@ -326,7 +326,7 @@ export function validateRuleObject(ruleObject: unknown): ValidationResult {
 
   if (!rule.Id || typeof rule.Id !== "string") errors.push("RuleObject.Id is required");
   if (typeof rule.name !== "string") errors.push("RuleObject.name must be string");
-  if (rule.ruleMode !== "and" && rule.ruleMode !== "or") errors.push("RuleObject.ruleMode must be 'and' or 'or'");
+  if (rule.ruleMode !== "all" && rule.ruleMode !== "any") errors.push("RuleObject.ruleMode must be 'all' or 'any'");
   if (!Array.isArray(rule.conditions)) errors.push("RuleObject.conditions must be an array");
 
   if (Array.isArray(rule.conditions)) {
@@ -354,7 +354,7 @@ export function normalizeRuleObject(ruleObject: RuleObject): RuleObject {
     ...ruleObject,
     minTriggerDuration: Number.isFinite(ruleObject.minTriggerDuration) ? ruleObject.minTriggerDuration : -1,
     lastTriggerValue: ruleObject.lastTriggerValue instanceof Date ? ruleObject.lastTriggerValue : null,
-    ruleMode: ruleObject.ruleMode === "or" ? "or" : "and",
+    ruleMode: ruleObject.ruleMode === "any" ? "any" : "all",
     owner: ruleObject.owner ?? null,
     controllers: { ...(ruleObject.controllers ?? {}) },
     conditions: [...(ruleObject.conditions ?? [])]

@@ -5,6 +5,7 @@ export type RuleMetadata =
   | "minTriggerDuration"
   | "owner"
   | "ruleMode"
+  | "meta"
   | string;
 
 /**
@@ -50,6 +51,16 @@ export interface RuleConditionItem extends RuleItemBase {
   conditionUnit?: ConditionUnit;
   /** Threshold used with duration-based conditions. */
   conditionLimit?: number;
+}
+
+export interface RuleMetaItem extends RuleItemBase {
+  metadata: "meta";
+  /** ISO8601 timestring of when the rule was created. */
+  createdAt?: string;
+  /** ISO8601 timestring of when the rule was last updated. */
+  updatedAt?: string;
+  /** Optional userId(uuidv4) of the user that created this rule.  */
+  createdBy?: string;
 }
 
 /**
@@ -144,6 +155,7 @@ export type RuleItem =
   | RuleMinTriggerDurationItem
   | RuleOwnerItem
   | RuleModeItem
+  | RuleMetaItem
   | RuleControllerItem;
 
 export interface RuleNotify {
@@ -172,6 +184,8 @@ export interface RuleObject {
   ruleMode: "any" | "all";
   /** Owner id if assigned; otherwise null. */
   owner: string | null;
+  /** Optional metadata about the rule. */
+  meta?: RuleMetaItem;
 }
 
 export interface ValidationResult {

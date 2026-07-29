@@ -4,6 +4,7 @@ import type {
   RuleConditionItem,
   RuleControllerItem,
   RuleItem,
+  RuleMetaItem,
   RuleNotify,
   RuleObject,
   TransformResult,
@@ -146,6 +147,30 @@ export function normalizeCondition(raw: Record<string, unknown>): RuleConditionI
   return result;
 }
 
+export function normalizeMeta(raw: Record<string, unknown>): RuleMetaItem {
+  const metadata = String(raw.metadata ?? "");
+  if (metadata !== "meta") {
+    throw new Error(`Invalid meta metadata: ${metadata}`);
+  }
+
+  const result: RuleMetaItem = {
+    ruleId: String(raw.ruleId ?? ""),
+    metadata: "meta"
+  };
+
+  if (raw.createdAt != null) {
+    result.createdAt = String(raw.createdAt);
+  }
+  if (raw.updatedAt != null) {
+    result.updatedAt = String(raw.updatedAt);
+  }
+  if (raw.createdBy != null) {
+    result.createdBy = String(raw.createdBy);
+  }
+
+  return result;
+}
+
 export function normalizeController(raw: Record<string, unknown>): RuleControllerItem {
   const metadata = String(raw.metadata ?? "");
   if (!metadata.startsWith("controller")) {
@@ -247,6 +272,12 @@ export function fromDdbItems(items: RuleItem[]): TransformResult<RuleObject> {
       if (metadata.startsWith("controller")) {
         const normalizedControllerObject = normalizeController(raw);
         rule.controllers.push(normalizedControllerObject);
+        continue;
+      }
+
+      if (metadata === "meta") {
+        rule.meta = normalizeMeta(raw);
+        continue;
       }
     }
 
@@ -307,6 +338,19 @@ export function toDdbItems(ruleObject: RuleObject): TransformResult<RuleItem[]> 
         notificationType: ruleObject.notify.notificationType,
         notificationValue: ruleObject.notify.notificationValue
       });
+    }
+
+    if (ruleObject.meta) {
+      const metaItem: RuleMetaItem = {
+        ruleId,
+        metadata: "meta"
+      };
+
+      if (ruleObject.meta.createdAt != null) metaItem.createdAt = ruleObject.meta.createdAt;
+      if (ruleObject.meta.updatedAt != null) metaItem.updatedAt = ruleObject.meta.updatedAt;
+      if (ruleObject.meta.createdBy != null) metaItem.createdBy = ruleObject.meta.createdBy;
+
+      items.push(metaItem);
     }
 
     ruleObject.conditions.forEach((condition, index) => {

@@ -26,6 +26,24 @@ For GitHub Packages, consumer projects need `.npmrc`:
 //npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
 ```
 
+### Install from git (fast, prebuilt)
+
+Do **not** install from `main` or `vX.Y.Z` tags: those refs have a `prepare` script, so npm
+downloads all devDependencies (tsup/esbuild, vitest, typescript) and builds on every install.
+
+Use the prebuilt refs produced by the `Release Dist` workflow instead (no scripts, `dist/` included):
+
+```bash
+# pinned version (recommended)
+npm i "git+ssh://git@github.com/crescendoCat/rule-transform-sdk.git#dist-v0.3.1"
+# latest release
+npm i "git+ssh://git@github.com/crescendoCat/rule-transform-sdk.git#dist"
+```
+
+Pushing a `vX.Y.Z` tag (e.g. via `npm version patch && git push --follow-tags`) creates
+`dist-vX.Y.Z` and updates the `dist` branch. To backfill an existing tag, run the workflow
+manually with `ref` set to that tag.
+
 ## Development
 
 ```bash

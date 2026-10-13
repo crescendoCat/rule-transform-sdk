@@ -1,0 +1,79 @@
+# Build the package and push a prebuilt snapshot to the `dist` branch and a
+# `dist-vX.Y.Z` tag. The snapshot has no scripts / devDependencies, so
+# `npm install` from git skips the prepare step (no tsup/vitest download, no build).
+name: Release Dist
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag / branch / SHA to build (e.g. v0.3.1). Empty = selected ref.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency: release-dist
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build package
+        run: npm run build
+
+      - name: Assemble prebuilt package
+        run: |
+          PKG="$RUNNER_TEMP/pkg"
+          rm -rf "$PKG" && mkdir -p "$PKG"
+          cp -r dist package.json README.md "$PKG"/
+          cd "$PKG"
+          npm pkg delete scripts devDependencies publishConfig
+
+      - name: Commit to dist branch and tag
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="dist-v${VERSION}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION}"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          export GIT_INDEX_FILE="$RUNNER_TEMP/dist-index"
+          rm -f "$GIT_INDEX_FILE"
+          git --work-tree="$RUNNER_TEMP/pkg" add -A
+          TREE=$(git write-tree)
+          PARENT_ARGS=""
+          if PARENT=$(git rev-parse -q --verify refs/remotes/origin/dist); then
+            PARENT_ARGS="-p $PARENT"
+          fi
+          COMMIT=$(git commit-tree "$TREE" $PARENT_ARGS -m "dist: v${VERSION} (from $(git rev-parse --short HEAD))")
+
+          git tag -f "$TAG" "$COMMIT"
+          git push origin "${COMMIT}:refs/heads/dist" "+refs/tags/${TAG}:refs/tags/${TAG}"
+          echo "Published ${TAG} -> ${COMMIT}" >> "$GITHUB_STEP_SUMMARY"

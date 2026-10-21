@@ -1,3 +1,9 @@
+/*
+ * Item types of the legacy SensorRule layout: one rule split into many items
+ * (owner, name, ruleMode, condition-*, controller-*, notification, ...).
+ * The v2 domain object lives in ./rule-object.
+ */
+
 export type RuleMetadata =
   | "notification"
   | "name"
@@ -158,14 +164,24 @@ export type RuleItem =
   | RuleMetaItem
   | RuleControllerItem;
 
-export interface RuleNotify {
+/**
+ * Notification of the legacy (0.3.x) rule object.
+ * @deprecated Use `Notify` of the v2 `RuleObject`.
+ */
+export interface LegacyRuleNotify {
   /** Notification channel, e.g., email/telegram/line. */
   notificationType: string;
   /** Notification target payload. */
   notificationValue: string | RuleNotificationValueLine;
 }
 
-export interface RuleObject {
+/**
+ * The 0.3.x rule object, a thin wrapper around the legacy item layout.
+ * Kept so that consumers still reading the legacy layout through
+ * `fromLegacyDdbItems` keep working; new code uses the v2 `RuleObject`.
+ * @deprecated Use the v2 `RuleObject`.
+ */
+export interface LegacyRuleObject {
   /** Unique identifier for the rule. */
   Id: string;
   /** Minimum duration required between two trigger events. */
@@ -177,7 +193,7 @@ export interface RuleObject {
   /** All conditions evaluated by this rule. */
   conditions: RuleConditionItem[];
   /** Notification configuration for this rule. */
-  notify?: RuleNotify;
+  notify?: LegacyRuleNotify;
   /** All controllers associated with this rule. */
   controllers: RuleControllerItem[];
   /** Condition aggregation mode. */

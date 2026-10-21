@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { fromDdbItems, normalizeMeta, toDdbItems } from "../src/index";
+import { fromLegacyDdbItems, normalizeMeta, toLegacyDdbItems } from "../src/index";
 import type { RuleItem } from "../src/types";
 
-describe("rule-transform-sdk", () => {
+describe("legacy transforms (0.3.x behaviour)", () => {
   it("transforms DynamoDB items to RuleObject", () => {
     const items: RuleItem[] = [
       { ruleId: "rule-1", metadata: "name", name: "High Temp" },
@@ -40,7 +40,7 @@ describe("rule-transform-sdk", () => {
       }
     ];
 
-    const result = fromDdbItems(items);
+    const result = fromLegacyDdbItems(items);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -72,11 +72,11 @@ describe("rule-transform-sdk", () => {
       }
     ];
 
-    const parsed = fromDdbItems(source);
+    const parsed = fromLegacyDdbItems(source);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
-    const written = toDdbItems(parsed.data);
+    const written = toLegacyDdbItems(parsed.data);
     expect(written.ok).toBe(true);
     if (!written.ok) return;
 
@@ -105,11 +105,11 @@ describe("rule-transform-sdk", () => {
       }
     ];
 
-    const parsed = fromDdbItems(source);
+    const parsed = fromLegacyDdbItems(source);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
-    const written = toDdbItems(parsed.data);
+    const written = toLegacyDdbItems(parsed.data);
     expect(written.ok).toBe(true);
     if (!written.ok) return;
 
@@ -123,7 +123,7 @@ describe("rule-transform-sdk", () => {
     expect(metaItem?.createdBy).toBe("user-1");
 
     // re-parsing the written items should reproduce the same meta
-    const reparsed = fromDdbItems(written.data);
+    const reparsed = fromLegacyDdbItems(written.data);
     expect(reparsed.ok).toBe(true);
     if (!reparsed.ok) return;
     expect(reparsed.data.meta).toEqual(parsed.data.meta);
@@ -143,12 +143,12 @@ describe("rule-transform-sdk", () => {
       }
     ];
 
-    const parsed = fromDdbItems(source);
+    const parsed = fromLegacyDdbItems(source);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.data.meta).toBeUndefined();
 
-    const written = toDdbItems(parsed.data);
+    const written = toLegacyDdbItems(parsed.data);
     expect(written.ok).toBe(true);
     if (!written.ok) return;
     expect(written.data.some((item) => item.metadata === "meta")).toBe(false);
@@ -172,7 +172,7 @@ describe("rule-transform-sdk", () => {
   it("handles ddbClient raw items", () => {
     const rawItems = [{"conditionLimit":{"S":"3"},"value":{"S":"30"},"metadata":{"S":"condition-4cf300a6-c282-416c-9a8e-c2d429ed646b->="},"conditionUnit":{"S":"Times"},"condition":{"S":">="},"sensorId":{"S":"4cf300a6-c282-416c-9a8e-c2d429ed646b"},"conditionType":{"S":"Continual"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"},"conditionName":{"S":"溫度過高"}},{"value":{"S":"2026-07-18T06:40:57.276Z"},"metadata":{"S":"lastTrigger"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"}},{"value":{"S":"0"},"metadata":{"S":"minTriggerDuration"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"}},{"name":{"S":"705後方伺服器機櫃溫度監控"},"metadata":{"S":"name"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"}},{"notificationType":{"S":"line"},"metadata":{"S":"notification"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"},"lineTokenCreatedAt":{"S":"none"},"notificationValue":{"M":{"id_name":{"S":"測試用"},"id_type":{"S":"user"}}}},{"metadata":{"S":"owner"},"ruleId":{"S":"315c0292-8f16-4460-bcde-0e7134b657ed"},"areaId":{"S":"9f3ba901-9f46-40f6-81ca-ef93aecb37b0"},"ownerId":{"S":"1321cf85-e3cf-4f48-b6ff-7d668b729305"}}]
 
-    const result = fromDdbItems(rawItems as any);
+    const result = fromLegacyDdbItems(rawItems as any);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -217,7 +217,7 @@ describe("rule-transform-sdk", () => {
       }
     ];
 
-    const result = fromDdbItems(rawItems as any);
+    const result = fromLegacyDdbItems(rawItems as any);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 

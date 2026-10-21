@@ -91,6 +91,42 @@ A no-data condition (`operator: "no-data"`) has no threshold and instead:
 - `toWriteSet(ruleObject, previousItems?)`: the items to put and the keys to delete so that the rule ends up in the v2 layout. Pass every item currently stored for the rule (a query on `ruleId`) as `previousItems`: whatever they contain that the new write does not put is deleted (all legacy items when converting a legacy rule, index items of sensors no longer referenced). Rule State items (`lastTrigger`, `state`) are kept. Fails when the write would need more than 100 actions.
 - `toTransactWriteItems(writeSet, tableName = "SensorRule")`: turns a write set into `TransactItems` for DocumentClient's `TransactWriteCommand`, so the whole write is one transaction.
 
+### DynamoDB access
+
+Every function below takes a v3 `DynamoDBDocumentClient` as its first argument; the SDK never creates a client, so the endpoint, region and credentials are the caller's choice. The last argument is optional `{ tableName }` (default `"SensorRule"`). Queries find rules in both layouts and follow pagination. Problems with the data are returned as results; DynamoDB errors reject.
+
+| Function | Use |
+| --- | --- |
+| `getRule(client, ruleId)` | `{ ok: true, data: RuleObject }`, `{ ok: true, data: null }` when the rule does not exist, or `{ ok: false, errors }` when its items cannot be read. |
+| `findRulesBySensorId(client, sensorId)` | For the rule engine when a reading arrives: `{ rules, errors }`, the rules with a condition on the sensor plus the rules that could not be read. |
+| `findNoDataConditions(client)` | For the no-data service: `{ conditions: [{ rule, condition }], errors }`. Disabled rules and conditions are included; check `enabled`. |
+| `listRulesByOwner(client, ownerId)` | `{ rules, errors }` for one owner. |
+| `putRule(client, ruleObject)` | Writes the rule in the v2 layout in one transaction; a legacy rule is converted. Never touches the Rule State. Returns `{ ok, errors }` (validation errors). |
+| `deleteRule(client, ruleId)` | Deletes every item of the rule, the Rule State included. Resolves to `{ deleted }`. |
+
+### Rule State
+
+The Rule State is written only by the rule engine and is stored apart from the rule definition (`metadata: "state"` in the same table).
+
+```ts
+interface RuleState {
+  lastTriggeredAt: string | null; // ISO 8601
+  triggered: boolean;             // triggered and not yet recovered
+  recoveredAt: string | null;     // ISO 8601
+  version: number;                // 0 when no state is stored yet
+}
+```
+
+- `getRuleState(client, ruleId)`: the stored state; for a legacy rule without a state yet, the legacy `lastTrigger` item gives `lastTriggeredAt`.
+- `putRuleState(client, ruleId, state)`: writes the state only if the stored version is still `state.version` (the version you read), and stores `version + 1`. When another engine instance wrote first it returns `{ ok: false, conflict: true }` and writes nothing: read again and retry. On success it returns `{ ok: true, version }`.
+
+### ruleChange messages
+
+The API publishes a message on `RULE_CHANGE_TOPIC` (`notifyEngine/ruleChange`) after every change to a Sensor Rule.
+
+- `encodeRuleChange({ type, ruleId })`: `type` is `"created"`, `"updated"` or `"deleted"`. Returns the JSON string to publish.
+- `decodeRuleChange(payload)`: accepts a string, bytes or an object. Understands the v2 format and both legacy formats (v1's `add-rule`, `delete-rule`, `update-condition`, `delete-condition`, `update-notification`, `delete-notification`, `delete-controller`, and `/api/v2/sensor-rule`'s `Rule created`, `Condition updated`, ...). A change to part of a rule decodes as `"updated"`. Returns `{ ok: true, data: { type, ruleId, format, legacyMessage? } }` or `{ ok: false, errors }`.
+
 ## Storage
 
 The storage layout is internal to the SDK; consumers only see `RuleObject`. Since 0.4.0 a rule is written as one definition item (`metadata: "definition"`, with `schemaVersion: 2`, `ownerId` and the whole `RuleObject`) plus one index item per referenced sensor (`metadata: "sensor#<sensorId>"`, with `sensorId`, and `condition: "no-data"` when a no-data condition uses the sensor), in the existing `SensorRule` table and its GSIs. The definition item carries no `sensorId` or `condition`, so it stays out of `sensorId-index` and `condition-index`; index items carry no `ownerId`, so they stay out of `ownerId-ruleId-index`. Items written by a newer schema version are refused rather than overwritten.
@@ -145,6 +181,8 @@ Rules in the legacy layout (one item per `owner`, `name`, `ruleMode`, `minTrigge
 ```bash
 npm i @crescendoCat/rule-transform-sdk
 ```
+
+The DynamoDB functions need `@aws-sdk/lib-dynamodb` (v3), declared as a peer dependency so that the SDK uses the consumer's copy.
 
 For GitHub Packages, consumer projects need `.npmrc`:
 

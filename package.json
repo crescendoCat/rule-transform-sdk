@@ -1,6 +1,6 @@
 {
   "name": "@crescendoCat/rule-transform-sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Transform SensorRule DynamoDB items to a normalized RuleObject and back.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -29,5 +29,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "peerDependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
   }
 }

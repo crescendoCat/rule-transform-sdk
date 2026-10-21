@@ -1,3 +1,5 @@
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+
 type RuleMetadata = "notification" | "name" | "lastTrigger" | "minTriggerDuration" | "owner" | "ruleMode" | "meta" | string;
 /**
  * Base shape shared by all rule items stored in the same rule set.
@@ -183,16 +185,6 @@ type TransformResult<T> = {
  */
 declare function validateRuleObject(ruleObject: unknown): ValidationResult;
 
-declare function normalizeRawItem(item: Record<string, unknown>): Record<string, unknown>;
-declare function normalizeNotify(item: Record<string, unknown>): LegacyRuleNotify;
-declare function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem;
-declare function normalizeMeta(raw: Record<string, unknown>): RuleMetaItem;
-declare function normalizeController(raw: Record<string, unknown>): RuleControllerItem;
-declare function fromLegacyDdbItems(items: RuleItem[]): TransformResult<LegacyRuleObject>;
-declare function toLegacyDdbItems(ruleObject: LegacyRuleObject): TransformResult<RuleItem[]>;
-declare function validateLegacyRuleObject(ruleObject: unknown): ValidationResult;
-declare function normalizeLegacyRuleObject(ruleObject: LegacyRuleObject): LegacyRuleObject;
-
 /** How conditions (inside a group) or groups (inside a rule) are combined. */
 type GroupMode = "any" | "all";
 /** Operators that compare a reading against a threshold. */
@@ -305,4 +297,170 @@ interface RuleObject {
     meta?: RuleMeta;
 }
 
-export { type ComparisonCondition, type ComparisonOperator, type Condition, type ConditionBase, type ConditionGroup, type ConditionOperator, type ConditionType, type ConditionUnit, type GroupMode, type LegacyRuleNotify, type LegacyRuleObject, type LineRecipient, type NoDataCondition, type Notify, type RuleConditionItem, type RuleController, type RuleControllerItem, type RuleItem, type RuleItemBase, type RuleLastTriggerItem, type RuleMeta, type RuleMetaItem, type RuleMetadata, type RuleMinTriggerDurationItem, type RuleModeItem, type RuleNameItem, type RuleNotificationItem, type RuleNotificationValueLine, type RuleObject, type RuleOwnerItem, type Sustain, type TransformResult, type ValidationResult, fromLegacyDdbItems, normalizeCondition, normalizeController, normalizeLegacyRuleObject, normalizeMeta, normalizeNotify, normalizeRawItem, toLegacyDdbItems, validateLegacyRuleObject, validateRuleObject };
+declare const DEFAULT_TABLE_NAME = "SensorRule";
+declare const DEFINITION_METADATA = "definition";
+/** TransactWriteItems accepts at most this many actions. */
+declare const MAX_TRANSACTION_ACTIONS = 100;
+interface RuleItemKey {
+    ruleId: string;
+    metadata: string;
+}
+interface RuleDefinitionItem extends RuleItemKey {
+    metadata: typeof DEFINITION_METADATA;
+    schemaVersion: number;
+    ownerId: string;
+    rule: RuleObject;
+}
+interface RuleSensorIndexItem extends RuleItemKey {
+    schemaVersion: number;
+    sensorId: string;
+    condition?: "no-data";
+}
+/** Items to put and keys to delete, written together in one transaction. */
+interface WriteSet {
+    puts: (RuleDefinitionItem | RuleSensorIndexItem)[];
+    deletes: RuleItemKey[];
+}
+/** Input of DynamoDB DocumentClient's TransactWriteCommand (`TransactItems`). */
+type DocumentTransactWriteItem = {
+    Put: {
+        TableName: string;
+        Item: Record<string, unknown>;
+    };
+} | {
+    Delete: {
+        TableName: string;
+        Key: RuleItemKey;
+    };
+};
+/**
+ * True when the items of a rule are in the v2 layout. The legacy API (v1) uses it to
+ * leave v2 rules alone. Accepts DocumentClient items and raw AttributeValue items.
+ */
+declare function isNewLayout(items: readonly unknown[]): boolean;
+/**
+ * Reads every item of one rule (in either layout) as a RuleObject.
+ * Index items and Rule State items are ignored. When a definition item exists it is
+ * authoritative and any leftover legacy items are ignored.
+ */
+declare function fromDdbItems(items: readonly unknown[]): TransformResult<RuleObject>;
+/**
+ * Builds the items to put and delete so that, after one transaction, the rule is stored
+ * in the v2 layout and nothing stale is left.
+ *
+ * `previousItems` are the items currently stored for the rule (all of them, as returned by
+ * a query on ruleId; either layout). Everything previously stored that the new write does not
+ * put is deleted: legacy items when converting a legacy rule, and index items of sensors the
+ * rule no longer references. Rule State items are kept.
+ */
+declare function toWriteSet(ruleObject: RuleObject, previousItems?: readonly unknown[]): TransformResult<WriteSet>;
+/** Turns a write set into `TransactItems` for DynamoDB DocumentClient's TransactWriteCommand. */
+declare function toTransactWriteItems(writeSet: WriteSet, tableName?: string): DocumentTransactWriteItem[];
+
+interface TableOptions {
+    /** Defaults to "SensorRule". */
+    tableName?: string;
+}
+/** Rules found by a query, plus the rules that could not be read and why. */
+interface RuleLookup {
+    rules: RuleObject[];
+    errors: {
+        ruleId: string;
+        errors: string[];
+    }[];
+}
+interface NoDataConditionRef {
+    rule: RuleObject;
+    condition: NoDataCondition;
+}
+interface NoDataLookup {
+    conditions: NoDataConditionRef[];
+    errors: {
+        ruleId: string;
+        errors: string[];
+    }[];
+}
+/**
+ * Reads one rule in either layout. `data` is null when nothing but Rule State (or nothing at all)
+ * is stored under the ID.
+ */
+declare function getRule(client: DynamoDBDocumentClient, ruleId: string, options?: TableOptions): Promise<TransformResult<RuleObject | null>>;
+/** Rules with a condition on the sensor, for the rule engine when a reading arrives. */
+declare function findRulesBySensorId(client: DynamoDBDocumentClient, sensorId: string, options?: TableOptions): Promise<RuleLookup>;
+/** Every no-data condition with its rule, for the no-data service. Callers check `enabled`. */
+declare function findNoDataConditions(client: DynamoDBDocumentClient, options?: TableOptions): Promise<NoDataLookup>;
+/** Rules owned by an account. v2 rules are read straight from the index; legacy rules need their items. */
+declare function listRulesByOwner(client: DynamoDBDocumentClient, ownerId: string, options?: TableOptions): Promise<RuleLookup>;
+/**
+ * Writes a rule in the v2 layout in one transaction. A legacy rule is converted (its legacy items
+ * are deleted); the Rule State is left untouched. Returns the validation errors when the rule is invalid.
+ */
+declare function putRule(client: DynamoDBDocumentClient, ruleObject: RuleObject, options?: TableOptions): Promise<ValidationResult>;
+/**
+ * Deletes every item of a rule, including its Rule State. Rules of up to 100 items are deleted in one
+ * transaction; larger leftovers are deleted in several. Resolves to the number of items deleted.
+ */
+declare function deleteRule(client: DynamoDBDocumentClient, ruleId: string, options?: TableOptions): Promise<{
+    deleted: number;
+}>;
+
+declare const RULE_STATE_METADATA_KEY = "state";
+interface RuleState {
+    /** ISO 8601 time of the latest trigger; null when the rule has never triggered. */
+    lastTriggeredAt: string | null;
+    /** True while the rule has triggered and not yet recovered. */
+    triggered: boolean;
+    /** ISO 8601 time of the latest recovery; null when it has never recovered. */
+    recoveredAt: string | null;
+    /**
+     * Version of the stored state; 0 when no state item exists yet. Pass back the version you read:
+     * putRuleState only writes when the stored version is still the same.
+     */
+    version: number;
+}
+type PutRuleStateResult = {
+    ok: true;
+    version: number;
+} | {
+    ok: false;
+    conflict: boolean;
+    errors: string[];
+};
+/** Reads the Rule State, falling back to the legacy lastTrigger item, then to the initial state. */
+declare function getRuleState(client: DynamoDBDocumentClient, ruleId: string, options?: TableOptions): Promise<RuleState>;
+/**
+ * Writes the Rule State if nobody else wrote it since `state.version` was read (optimistic
+ * concurrency between engine instances handling the same rule). On a version conflict nothing is
+ * written and `conflict` is true: read the state again and retry.
+ */
+declare function putRuleState(client: DynamoDBDocumentClient, ruleId: string, state: RuleState, options?: TableOptions): Promise<PutRuleStateResult>;
+
+declare const RULE_CHANGE_TOPIC = "notifyEngine/ruleChange";
+declare const RULE_CHANGE_SCHEMA_VERSION = 2;
+type RuleChangeType = "created" | "updated" | "deleted";
+interface RuleChange {
+    type: RuleChangeType;
+    ruleId: string;
+}
+interface DecodedRuleChange extends RuleChange {
+    /** `v2` for messages from encodeRuleChange, `legacy` for messages of the legacy API. */
+    format: "v2" | "legacy";
+    /** The legacy message string (`msg`), when there was one. */
+    legacyMessage?: string;
+}
+/** Encodes a ruleChange message (a JSON string). Throws on an invalid change. */
+declare function encodeRuleChange(change: RuleChange): string;
+/** Decodes a ruleChange message in the v2 format or in either legacy format. */
+declare function decodeRuleChange(payload: unknown): TransformResult<DecodedRuleChange>;
+
+declare function normalizeRawItem(item: Record<string, unknown>): Record<string, unknown>;
+declare function normalizeNotify(item: Record<string, unknown>): LegacyRuleNotify;
+declare function normalizeCondition(raw: Record<string, unknown>): RuleConditionItem;
+declare function normalizeMeta(raw: Record<string, unknown>): RuleMetaItem;
+declare function normalizeController(raw: Record<string, unknown>): RuleControllerItem;
+declare function fromLegacyDdbItems(items: RuleItem[]): TransformResult<LegacyRuleObject>;
+declare function toLegacyDdbItems(ruleObject: LegacyRuleObject): TransformResult<RuleItem[]>;
+declare function validateLegacyRuleObject(ruleObject: unknown): ValidationResult;
+declare function normalizeLegacyRuleObject(ruleObject: LegacyRuleObject): LegacyRuleObject;
+
+export { type ComparisonCondition, type ComparisonOperator, type Condition, type ConditionBase, type ConditionGroup, type ConditionOperator, type ConditionType, type ConditionUnit, DEFAULT_TABLE_NAME, type DecodedRuleChange, type DocumentTransactWriteItem, type GroupMode, type LegacyRuleNotify, type LegacyRuleObject, type LineRecipient, MAX_TRANSACTION_ACTIONS, type NoDataCondition, type NoDataConditionRef, type NoDataLookup, type Notify, type PutRuleStateResult, RULE_CHANGE_SCHEMA_VERSION, RULE_CHANGE_TOPIC, RULE_STATE_METADATA_KEY, type RuleChange, type RuleChangeType, type RuleConditionItem, type RuleController, type RuleControllerItem, type RuleItem, type RuleItemBase, type RuleItemKey, type RuleLastTriggerItem, type RuleLookup, type RuleMeta, type RuleMetaItem, type RuleMetadata, type RuleMinTriggerDurationItem, type RuleModeItem, type RuleNameItem, type RuleNotificationItem, type RuleNotificationValueLine, type RuleObject, type RuleOwnerItem, type RuleState, type Sustain, type TableOptions, type TransformResult, type ValidationResult, type WriteSet, decodeRuleChange, deleteRule, encodeRuleChange, findNoDataConditions, findRulesBySensorId, fromDdbItems, fromLegacyDdbItems, getRule, getRuleState, isNewLayout, listRulesByOwner, normalizeCondition, normalizeController, normalizeLegacyRuleObject, normalizeMeta, normalizeNotify, normalizeRawItem, putRule, putRuleState, toLegacyDdbItems, toTransactWriteItems, toWriteSet, validateLegacyRuleObject, validateRuleObject };

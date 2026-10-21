@@ -574,15 +574,579 @@ function normalizeLegacyRuleObject(ruleObject) {
     conditions: [...ruleObject.conditions ?? []]
   };
 }
+
+// src/uuid.ts
+import { createHash } from "crypto";
+var SDK_UUID_NAMESPACE = "9b2f6c1e-5a4d-4e8b-a7c3-2d1f0e9b8a76";
+function uuidV5(name, namespace = SDK_UUID_NAMESPACE) {
+  const namespaceBytes = Buffer.from(namespace.replace(/-/g, ""), "hex");
+  if (namespaceBytes.length !== 16) throw new Error(`Invalid UUID namespace: ${namespace}`);
+  const bytes = createHash("sha1").update(namespaceBytes).update(name, "utf8").digest().subarray(0, 16);
+  bytes[6] = (bytes[6] ?? 0) & 15 | 80;
+  bytes[8] = (bytes[8] ?? 0) & 63 | 128;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// src/legacy-mapping.ts
+var COMPARISON_OPERATORS2 = /* @__PURE__ */ new Set([">", "<", "=", ">=", "<=", "!="]);
+var KNOWN_CONDITION_TYPES = /* @__PURE__ */ new Set(["Continual", "Duration", "-1"]);
+var LegacyMappingError = class extends Error {
+};
+function optionalNumber(value, field) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(n)) throw new LegacyMappingError(`${field} is not a number: ${String(value)}`);
+  return n;
+}
+function optionalText(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed === "" ? void 0 : trimmed;
+}
+function mapSustain(raw, where) {
+  const unit = optionalText(raw.conditionUnit);
+  const limit = optionalNumber(raw.conditionLimit, `${where}.conditionLimit`);
+  if (unit === "Percent") {
+    const hours = optionalNumber(raw.duration, `${where}.duration`);
+    if (hours === void 0 || hours <= 0) {
+      throw new LegacyMappingError(`${where} is a Percent condition without a positive duration`);
+    }
+    if (limit === void 0 || limit <= 0 || limit > 100) {
+      throw new LegacyMappingError(`${where}.conditionLimit must be greater than 0 and at most 100 for a Percent condition`);
+    }
+    return { type: "ratio", windowMinutes: hours * 60, percent: limit };
+  }
+  if (unit === void 0 || unit === "Times") {
+    const n = limit ?? 1;
+    if (!Number.isInteger(n) || n < 1) {
+      throw new LegacyMappingError(`${where}.conditionLimit must be a positive integer for a Times condition`);
+    }
+    return { type: "count", n };
+  }
+  throw new LegacyMappingError(`${where}.conditionUnit is unknown: ${unit}`);
+}
+function mapCondition(ruleId, raw) {
+  const metadata = String(raw.metadata);
+  const where = `condition ${metadata}`;
+  const sensorId = optionalText(raw.sensorId);
+  if (!sensorId) throw new LegacyMappingError(`${where} has no sensorId`);
+  const conditionType = optionalText(raw.conditionType);
+  if (conditionType !== void 0 && !KNOWN_CONDITION_TYPES.has(conditionType)) {
+    throw new LegacyMappingError(`${where}.conditionType is unknown: ${conditionType}`);
+  }
+  const base = { id: uuidV5(`${ruleId}/${metadata}`), sensorId, enabled: true };
+  const name = optionalText(raw.conditionName);
+  const named = name === void 0 ? base : { ...base, name };
+  if (raw.condition === "no-data") {
+    const hours = optionalNumber(raw.duration, `${where}.duration`);
+    if (hours === void 0 || hours <= 0) {
+      throw new LegacyMappingError(`${where} is a no-data condition without a positive duration`);
+    }
+    return { ...named, operator: "no-data", noDataMinutes: hours * 60 };
+  }
+  if (typeof raw.condition !== "string" || !COMPARISON_OPERATORS2.has(raw.condition)) {
+    throw new LegacyMappingError(`${where} has an unknown operator: ${String(raw.condition)}`);
+  }
+  const threshold = optionalNumber(raw.value, `${where}.value`);
+  if (threshold === void 0) throw new LegacyMappingError(`${where} has no threshold value`);
+  return {
+    ...named,
+    operator: raw.condition,
+    threshold,
+    sustain: mapSustain(raw, where)
+  };
+}
+function mapController(raw) {
+  const metadata = String(raw.metadata);
+  const controllerId = optionalText(metadata.slice("controller-".length)) ?? optionalText(raw.controllerId);
+  if (!controllerId) throw new LegacyMappingError(`controller ${metadata} has no controllerId`);
+  const value = optionalNumber(raw.value, `controller ${metadata}.value`);
+  if (value === void 0) throw new LegacyMappingError(`controller ${metadata} has no value`);
+  const controller = { controllerId, value, enabled: raw.activate !== false };
+  const name = optionalText(raw.controllerName);
+  if (name !== void 0) controller.name = name;
+  return controller;
+}
+function mapLineRecipient(value) {
+  const idType = value.id_type ?? value.idType;
+  const idName = value.id_name ?? value.idName;
+  if (idType !== "user" && idType !== "group" || typeof idName !== "string" || idName === "") {
+    throw new LegacyMappingError("notification has a LINE recipient object without a valid id_type / id_name");
+  }
+  return { id_type: idType, id_name: idName };
+}
+function mapNotify(raw) {
+  const type = optionalText(raw.notificationType ?? raw.notification_type);
+  const value = raw.notificationValue ?? raw.notification_detail;
+  if (type === "line") {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      return { type: "line", recipient: mapLineRecipient(value) };
+    }
+    return void 0;
+  }
+  if (type === "email" || type === "telegram") {
+    const recipient = optionalText(value);
+    return recipient === void 0 ? void 0 : { type, recipient };
+  }
+  return void 0;
+}
+function mapMeta(raw) {
+  const meta = {};
+  for (const field of ["createdAt", "updatedAt", "createdBy"]) {
+    if (typeof raw[field] === "string") meta[field] = raw[field];
+  }
+  return meta;
+}
+function ruleObjectFromLegacyItems(ruleId, items) {
+  try {
+    let ownerId;
+    let areaId;
+    let name = "";
+    let mode = "all";
+    let cooldownMs = 0;
+    let notify;
+    let meta;
+    const conditions = [];
+    const ruleControllers = [];
+    for (const raw of items) {
+      const metadata = String(raw.metadata ?? "");
+      if (metadata === "owner") {
+        ownerId = optionalText(raw.ownerId);
+        areaId = optionalText(raw.areaId);
+      } else if (metadata === "name") {
+        name = typeof raw.name === "string" ? raw.name : "";
+      } else if (metadata === "ruleMode") {
+        if (raw.value !== "any" && raw.value !== "all") throw new LegacyMappingError(`ruleMode is invalid: ${String(raw.value)}`);
+        mode = raw.value;
+      } else if (metadata === "minTriggerDuration") {
+        const value = optionalNumber(raw.value, "minTriggerDuration.value");
+        cooldownMs = value === void 0 || value < 0 ? 0 : value;
+      } else if (metadata === "notification") {
+        notify = mapNotify(raw);
+      } else if (metadata === "meta") {
+        meta = mapMeta(raw);
+      } else if (metadata.startsWith("condition")) {
+        conditions.push(mapCondition(ruleId, raw));
+      } else if (metadata.startsWith("controller")) {
+        ruleControllers.push(mapController(raw));
+      }
+    }
+    if (!ownerId) {
+      throw new LegacyMappingError("legacy rule has no owner item");
+    }
+    const rule = {
+      id: ruleId,
+      name,
+      ownerId,
+      enabled: true,
+      cooldownMs,
+      groupMode: "all",
+      groups: conditions.length > 0 ? [{ id: uuidV5(`${ruleId}/group`), mode, conditions }] : [],
+      ruleControllers
+    };
+    if (areaId !== void 0) rule.areaId = areaId;
+    if (notify !== void 0) rule.notify = notify;
+    if (meta !== void 0) rule.meta = meta;
+    const validation = validateRuleObject(rule);
+    if (!validation.ok) return { ok: false, errors: validation.errors.map((e) => `legacy rule ${ruleId}: ${e}`) };
+    return { ok: true, data: rule };
+  } catch (error) {
+    if (error instanceof LegacyMappingError) return { ok: false, errors: [`legacy rule ${ruleId}: ${error.message}`] };
+    throw error;
+  }
+}
+
+// src/storage.ts
+var DEFAULT_TABLE_NAME = "SensorRule";
+var SCHEMA_VERSION = 2;
+var DEFINITION_METADATA = "definition";
+var SENSOR_INDEX_PREFIX = "sensor#";
+var RULE_STATE_METADATA = /* @__PURE__ */ new Set(["lastTrigger", "state"]);
+var MAX_TRANSACTION_ACTIONS = 100;
+function normalizeAll(items) {
+  return items.map((item, index) => {
+    if (typeof item !== "object" || item === null) throw new Error(`items[${index}] must be an object`);
+    return normalizeRawItem(item);
+  });
+}
+function sameRuleId(items) {
+  const ruleId = String(items[0]?.ruleId ?? "");
+  if (!ruleId) throw new Error("Missing ruleId in input items");
+  for (const item of items) {
+    if (String(item.ruleId ?? "") !== ruleId) {
+      throw new Error(`Mixed ruleId detected: ${String(item.ruleId)} vs ${ruleId}`);
+    }
+  }
+  return ruleId;
+}
+function checkSchemaVersion(item) {
+  const version = Number(item.schemaVersion);
+  if (version > SCHEMA_VERSION) {
+    throw new Error(`Rule ${String(item.ruleId)} uses schemaVersion ${version}; this SDK supports up to ${SCHEMA_VERSION}`);
+  }
+}
+function isNewLayout(items) {
+  return normalizeAll(items).some((item) => item.metadata === DEFINITION_METADATA);
+}
+function fromDdbItems(items) {
+  try {
+    if (!Array.isArray(items) || items.length === 0) return { ok: false, errors: ["Input items must be a non-empty array"] };
+    const normalized = normalizeAll(items);
+    const ruleId = sameRuleId(normalized);
+    const definition = normalized.find((item) => item.metadata === DEFINITION_METADATA);
+    if (!definition) return ruleObjectFromLegacyItems(ruleId, normalized);
+    checkSchemaVersion(definition);
+    const rule = definition.rule;
+    if (typeof rule !== "object" || rule === null) return { ok: false, errors: [`Rule ${ruleId}: definition item has no rule`] };
+    if (rule.id !== ruleId) return { ok: false, errors: [`Rule ${ruleId}: definition holds rule ${String(rule.id)}`] };
+    const validation = validateRuleObject(rule);
+    if (!validation.ok) return { ok: false, errors: validation.errors.map((e) => `Rule ${ruleId}: ${e}`) };
+    return { ok: true, data: rule };
+  } catch (error) {
+    return { ok: false, errors: [error.message] };
+  }
+}
+function sensorIndexItems(rule) {
+  const noDataSensors = /* @__PURE__ */ new Set();
+  const sensors = /* @__PURE__ */ new Set();
+  for (const group of rule.groups) {
+    for (const condition of group.conditions) {
+      sensors.add(condition.sensorId);
+      if (condition.operator === "no-data") noDataSensors.add(condition.sensorId);
+    }
+  }
+  return [...sensors].sort().map((sensorId) => {
+    const item = {
+      ruleId: rule.id,
+      metadata: `${SENSOR_INDEX_PREFIX}${sensorId}`,
+      schemaVersion: SCHEMA_VERSION,
+      sensorId
+    };
+    if (noDataSensors.has(sensorId)) item.condition = "no-data";
+    return item;
+  });
+}
+function toWriteSet(ruleObject, previousItems = []) {
+  try {
+    const validation = validateRuleObject(ruleObject);
+    if (!validation.ok) return { ok: false, errors: validation.errors };
+    const rule = JSON.parse(JSON.stringify(ruleObject));
+    const definition = {
+      ruleId: rule.id,
+      metadata: DEFINITION_METADATA,
+      schemaVersion: SCHEMA_VERSION,
+      ownerId: rule.ownerId,
+      rule
+    };
+    const puts = [definition, ...sensorIndexItems(rule)];
+    const putKeys = new Set(puts.map((item) => item.metadata));
+    const deletes = [];
+    const deleted = /* @__PURE__ */ new Set();
+    for (const item of normalizeAll(previousItems)) {
+      if (String(item.ruleId ?? "") !== rule.id) {
+        return { ok: false, errors: [`previousItems contain an item of rule ${String(item.ruleId)}, not ${rule.id}`] };
+      }
+      if (item.metadata === DEFINITION_METADATA) checkSchemaVersion(item);
+      const metadata = String(item.metadata ?? "");
+      if (putKeys.has(metadata) || RULE_STATE_METADATA.has(metadata) || deleted.has(metadata)) continue;
+      deleted.add(metadata);
+      deletes.push({ ruleId: rule.id, metadata });
+    }
+    const actions = puts.length + deletes.length;
+    if (actions > MAX_TRANSACTION_ACTIONS) {
+      return { ok: false, errors: [`Writing rule ${rule.id} needs ${actions} actions; one transaction allows at most ${MAX_TRANSACTION_ACTIONS}`] };
+    }
+    return { ok: true, data: { puts, deletes } };
+  } catch (error) {
+    return { ok: false, errors: [error.message] };
+  }
+}
+function toTransactWriteItems(writeSet, tableName = DEFAULT_TABLE_NAME) {
+  return [
+    ...writeSet.puts.map((item) => ({ Put: { TableName: tableName, Item: { ...item } } })),
+    ...writeSet.deletes.map((key) => ({ Delete: { TableName: tableName, Key: { ruleId: key.ruleId, metadata: key.metadata } } }))
+  ];
+}
+
+// src/queries.ts
+import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+var SENSOR_ID_INDEX = "sensorId-index";
+var CONDITION_INDEX = "condition-index";
+var OWNER_INDEX = "ownerId-ruleId-index";
+function tableOf(options) {
+  return options.tableName ?? DEFAULT_TABLE_NAME;
+}
+async function queryAll(client, input) {
+  const items = [];
+  let exclusiveStartKey;
+  do {
+    const page = await client.send(
+      new QueryCommand(exclusiveStartKey ? { ...input, ExclusiveStartKey: exclusiveStartKey } : input)
+    );
+    items.push(...page.Items ?? []);
+    exclusiveStartKey = page.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return items;
+}
+async function queryRuleItems(client, ruleId, options) {
+  return queryAll(client, {
+    TableName: tableOf(options),
+    KeyConditionExpression: "ruleId = :ruleId",
+    ExpressionAttributeValues: { ":ruleId": ruleId },
+    ConsistentRead: true
+  });
+}
+function holdsDefinition(item) {
+  const metadata = String(item.metadata ?? "");
+  return !RULE_STATE_METADATA.has(metadata) && !metadata.startsWith(SENSOR_INDEX_PREFIX);
+}
+function distinctRuleIds(items) {
+  return [...new Set(items.map((item) => String(item.ruleId ?? "")).filter((id) => id !== ""))];
+}
+async function loadRules(client, ruleIds, options) {
+  const lookup = { rules: [], errors: [] };
+  const results = await Promise.all(ruleIds.map((ruleId) => getRule(client, ruleId, options)));
+  results.forEach((result, index) => {
+    const ruleId = ruleIds[index];
+    if (!result.ok) lookup.errors.push({ ruleId, errors: result.errors });
+    else if (result.data) lookup.rules.push(result.data);
+  });
+  return lookup;
+}
+async function getRule(client, ruleId, options = {}) {
+  const items = await queryRuleItems(client, ruleId, options);
+  if (!items.some(holdsDefinition)) return { ok: true, data: null };
+  return fromDdbItems(items);
+}
+async function findRulesBySensorId(client, sensorId, options = {}) {
+  const indexed = await queryAll(client, {
+    TableName: tableOf(options),
+    IndexName: SENSOR_ID_INDEX,
+    KeyConditionExpression: "sensorId = :sensorId",
+    ExpressionAttributeValues: { ":sensorId": sensorId }
+  });
+  const lookup = await loadRules(client, distinctRuleIds(indexed), options);
+  lookup.rules = lookup.rules.filter(
+    (rule) => rule.groups.some((group) => group.conditions.some((condition) => condition.sensorId === sensorId))
+  );
+  return lookup;
+}
+async function findNoDataConditions(client, options = {}) {
+  const indexed = await queryAll(client, {
+    TableName: tableOf(options),
+    IndexName: CONDITION_INDEX,
+    KeyConditionExpression: "#condition = :condition",
+    ExpressionAttributeNames: { "#condition": "condition" },
+    ExpressionAttributeValues: { ":condition": "no-data" }
+  });
+  const { rules, errors } = await loadRules(client, distinctRuleIds(indexed), options);
+  const conditions = [];
+  for (const rule of rules) {
+    for (const group of rule.groups) {
+      for (const condition of group.conditions) {
+        if (condition.operator === "no-data") conditions.push({ rule, condition });
+      }
+    }
+  }
+  return { conditions, errors };
+}
+async function listRulesByOwner(client, ownerId, options = {}) {
+  const indexed = await queryAll(client, {
+    TableName: tableOf(options),
+    IndexName: OWNER_INDEX,
+    KeyConditionExpression: "ownerId = :ownerId",
+    ExpressionAttributeValues: { ":ownerId": ownerId }
+  });
+  const lookup = { rules: [], errors: [] };
+  const legacyIds = [];
+  for (const ruleId of distinctRuleIds(indexed)) {
+    const definition = indexed.find((item) => item.ruleId === ruleId && item.metadata === DEFINITION_METADATA);
+    if (!definition) {
+      legacyIds.push(ruleId);
+      continue;
+    }
+    const result = fromDdbItems([definition]);
+    if (result.ok) lookup.rules.push(result.data);
+    else lookup.errors.push({ ruleId, errors: result.errors });
+  }
+  const legacy = await loadRules(client, legacyIds, options);
+  lookup.rules.push(...legacy.rules);
+  lookup.errors.push(...legacy.errors);
+  return lookup;
+}
+async function putRule(client, ruleObject, options = {}) {
+  const previous = await queryRuleItems(client, ruleObject.id, options);
+  const writeSet = toWriteSet(ruleObject, previous);
+  if (!writeSet.ok) return { ok: false, errors: writeSet.errors };
+  await client.send(new TransactWriteCommand({ TransactItems: toTransactWriteItems(writeSet.data, tableOf(options)) }));
+  return { ok: true, errors: [] };
+}
+async function deleteRule(client, ruleId, options = {}) {
+  const items = await queryRuleItems(client, ruleId, options);
+  const tableName = tableOf(options);
+  for (let start = 0; start < items.length; start += MAX_TRANSACTION_ACTIONS) {
+    const chunk = items.slice(start, start + MAX_TRANSACTION_ACTIONS);
+    await client.send(
+      new TransactWriteCommand({
+        TransactItems: chunk.map((item) => ({
+          Delete: { TableName: tableName, Key: { ruleId, metadata: String(item.metadata) } }
+        }))
+      })
+    );
+  }
+  return { deleted: items.length };
+}
+
+// src/rule-state.ts
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+var RULE_STATE_METADATA_KEY = "state";
+function optionalIso(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+async function getRuleState(client, ruleId, options = {}) {
+  const TableName = options.tableName ?? DEFAULT_TABLE_NAME;
+  const state = await client.send(new GetCommand({ TableName, Key: { ruleId, metadata: RULE_STATE_METADATA_KEY }, ConsistentRead: true }));
+  if (state.Item) {
+    return {
+      lastTriggeredAt: optionalIso(state.Item.lastTriggeredAt),
+      triggered: state.Item.triggered === true,
+      recoveredAt: optionalIso(state.Item.recoveredAt),
+      version: Number(state.Item.version) || 0
+    };
+  }
+  const legacy = await client.send(new GetCommand({ TableName, Key: { ruleId, metadata: "lastTrigger" }, ConsistentRead: true }));
+  return { lastTriggeredAt: optionalIso(legacy.Item?.value), triggered: false, recoveredAt: null, version: 0 };
+}
+function stateErrors(state) {
+  const errors = [];
+  for (const field of ["lastTriggeredAt", "recoveredAt"]) {
+    const value = state[field];
+    if (value !== null && (typeof value !== "string" || Number.isNaN(Date.parse(value)))) {
+      errors.push(`RuleState.${field} must be an ISO 8601 time or null`);
+    }
+  }
+  if (typeof state.triggered !== "boolean") errors.push("RuleState.triggered must be a boolean");
+  if (!Number.isInteger(state.version) || state.version < 0) errors.push("RuleState.version must be an integer >= 0");
+  return errors;
+}
+async function putRuleState(client, ruleId, state, options = {}) {
+  const errors = stateErrors(state);
+  if (errors.length > 0) return { ok: false, conflict: false, errors };
+  const version = state.version + 1;
+  const Item = {
+    ruleId,
+    metadata: RULE_STATE_METADATA_KEY,
+    schemaVersion: SCHEMA_VERSION,
+    version,
+    triggered: state.triggered
+  };
+  if (state.lastTriggeredAt !== null) Item.lastTriggeredAt = state.lastTriggeredAt;
+  if (state.recoveredAt !== null) Item.recoveredAt = state.recoveredAt;
+  const condition = state.version === 0 ? { ConditionExpression: "attribute_not_exists(ruleId)" } : {
+    ConditionExpression: "#version = :expected",
+    ExpressionAttributeNames: { "#version": "version" },
+    ExpressionAttributeValues: { ":expected": state.version }
+  };
+  try {
+    await client.send(new PutCommand({ TableName: options.tableName ?? DEFAULT_TABLE_NAME, Item, ...condition }));
+    return { ok: true, version };
+  } catch (error) {
+    if (error.name === "ConditionalCheckFailedException") {
+      return { ok: false, conflict: true, errors: [`Rule State of ${ruleId} changed after version ${state.version} was read`] };
+    }
+    throw error;
+  }
+}
+
+// src/rule-change.ts
+var RULE_CHANGE_TOPIC = "notifyEngine/ruleChange";
+var RULE_CHANGE_SCHEMA_VERSION = 2;
+var CHANGE_TYPES = /* @__PURE__ */ new Set(["created", "updated", "deleted"]);
+var LEGACY_MESSAGES = {
+  "add-rule": "created",
+  "delete-rule": "deleted",
+  "update-condition": "updated",
+  "delete-condition": "updated",
+  "update-notification": "updated",
+  "delete-notification": "updated",
+  "delete-controller": "updated",
+  "Rule created": "created",
+  "Rule updated": "updated",
+  "Rule deleted": "deleted",
+  "Condition updated": "updated",
+  "Condition deleted": "updated",
+  "Controller updated": "updated",
+  "Controller deleted": "updated"
+};
+var LEGACY_TYPES = { add: "created", update: "updated", delete: "updated" };
+function encodeRuleChange(change) {
+  if (!CHANGE_TYPES.has(change.type)) throw new Error(`Unknown rule change type: ${String(change.type)}`);
+  if (typeof change.ruleId !== "string" || change.ruleId === "") throw new Error("RuleChange.ruleId is required");
+  return JSON.stringify({ schemaVersion: RULE_CHANGE_SCHEMA_VERSION, type: change.type, ruleId: change.ruleId });
+}
+function parsePayload(payload) {
+  let value = payload;
+  if (value instanceof Uint8Array) value = new TextDecoder().decode(value);
+  if (typeof value === "string") value = JSON.parse(value);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("ruleChange payload must be a JSON object");
+  return value;
+}
+function decodeRuleChange(payload) {
+  let message;
+  try {
+    message = parsePayload(payload);
+  } catch (error) {
+    return { ok: false, errors: [`Cannot parse ruleChange payload: ${error.message}`] };
+  }
+  const ruleId = message.ruleId;
+  if (typeof ruleId !== "string" || ruleId === "") return { ok: false, errors: ["ruleChange payload has no ruleId"] };
+  if (message.schemaVersion !== void 0) {
+    if (message.schemaVersion !== RULE_CHANGE_SCHEMA_VERSION) {
+      return { ok: false, errors: [`ruleChange schemaVersion ${String(message.schemaVersion)} is not supported`] };
+    }
+    if (typeof message.type !== "string" || !CHANGE_TYPES.has(message.type)) {
+      return { ok: false, errors: [`Unknown rule change type: ${String(message.type)}`] };
+    }
+    return { ok: true, data: { type: message.type, ruleId, format: "v2" } };
+  }
+  const legacyMessage = typeof message.msg === "string" ? message.msg : void 0;
+  const type = (legacyMessage !== void 0 ? LEGACY_MESSAGES[legacyMessage] : void 0) ?? (typeof message.type === "string" ? LEGACY_TYPES[message.type] : void 0);
+  if (!type) {
+    return { ok: false, errors: [`Unknown legacy ruleChange message: type ${String(message.type)}, msg ${String(message.msg)}`] };
+  }
+  const decoded = { type, ruleId, format: "legacy" };
+  if (legacyMessage !== void 0) decoded.legacyMessage = legacyMessage;
+  return { ok: true, data: decoded };
+}
 export {
+  DEFAULT_TABLE_NAME,
+  MAX_TRANSACTION_ACTIONS,
+  RULE_CHANGE_SCHEMA_VERSION,
+  RULE_CHANGE_TOPIC,
+  RULE_STATE_METADATA_KEY,
+  decodeRuleChange,
+  deleteRule,
+  encodeRuleChange,
+  findNoDataConditions,
+  findRulesBySensorId,
+  fromDdbItems,
   fromLegacyDdbItems,
+  getRule,
+  getRuleState,
+  isNewLayout,
+  listRulesByOwner,
   normalizeCondition,
   normalizeController,
   normalizeLegacyRuleObject,
   normalizeMeta,
   normalizeNotify,
   normalizeRawItem,
+  putRule,
+  putRuleState,
   toLegacyDdbItems,
+  toTransactWriteItems,
+  toWriteSet,
   validateLegacyRuleObject,
   validateRuleObject
 };

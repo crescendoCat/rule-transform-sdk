@@ -86,6 +86,45 @@ A no-data condition (`operator: "no-data"`) has no threshold and instead:
 ## Functions
 
 - `validateRuleObject(ruleObject)`: checks a v2 `RuleObject` and returns `{ ok, errors }`, each error naming the field path (for example `groups[0].conditions[1].sustain.percent must be greater than 0 and at most 100`). Values are checked, never converted.
+- `fromDdbItems(items)`: reads all items of one rule, in either storage layout, as a `RuleObject`. Accepts DocumentClient items and raw AttributeValue items. Returns `{ ok: true, data }` or `{ ok: false, errors }`.
+- `isNewLayout(items)`: `true` when the rule is stored in the v2 layout. The legacy API (v1) uses it to refuse writes to v2 rules and to skip them when reading.
+- `toWriteSet(ruleObject, previousItems?)`: the items to put and the keys to delete so that the rule ends up in the v2 layout. Pass every item currently stored for the rule (a query on `ruleId`) as `previousItems`: whatever they contain that the new write does not put is deleted (all legacy items when converting a legacy rule, index items of sensors no longer referenced). Rule State items (`lastTrigger`, `state`) are kept. Fails when the write would need more than 100 actions.
+- `toTransactWriteItems(writeSet, tableName = "SensorRule")`: turns a write set into `TransactItems` for DocumentClient's `TransactWriteCommand`, so the whole write is one transaction.
+
+## Storage
+
+The storage layout is internal to the SDK; consumers only see `RuleObject`. Since 0.4.0 a rule is written as one definition item (`metadata: "definition"`, with `schemaVersion: 2`, `ownerId` and the whole `RuleObject`) plus one index item per referenced sensor (`metadata: "sensor#<sensorId>"`, with `sensorId`, and `condition: "no-data"` when a no-data condition uses the sensor), in the existing `SensorRule` table and its GSIs. The definition item carries no `sensorId` or `condition`, so it stays out of `sensorId-index` and `condition-index`; index items carry no `ownerId`, so they stay out of `ownerId-ruleId-index`. Items written by a newer schema version are refused rather than overwritten.
+
+### Reading legacy rules
+
+Rules in the legacy layout (one item per `owner`, `name`, `ruleMode`, `minTriggerDuration`, `notification`, `meta`, `condition-*`, `controller-*`, `lastTrigger`) are read as follows. Empty strings count as absent; numeric strings are parsed.
+
+| Legacy data | `RuleObject` |
+| --- | --- |
+| no `owner` item, or empty `ownerId` | error: every legacy write path stores an owner, so these are leftovers of a broken write |
+| `owner.areaId` missing | `areaId` absent |
+| `name` item missing | `name: ""` |
+| `ruleMode` `any` / `all` / missing | one Condition Group with that `mode` (missing → `all`); any other value is an error. `groupMode` is `all` |
+| no condition items | `groups: []` |
+| `minTriggerDuration` | `cooldownMs`; missing or negative (the legacy "not set" value `-1`) → `0` |
+| any rule | `enabled: true` |
+| `lastTrigger` item | not part of `RuleObject` (it is the initial Rule State) |
+| condition `id` | UUID v5 derived from `ruleId` and the condition's `metadata`, so the same rule gives the same IDs on every read |
+| condition without `sensorId`, or with an unknown operator | error |
+| `conditionName` | `name` |
+| comparison condition without `value` | error |
+| `conditionUnit: "Percent"` | `{ type: "ratio", windowMinutes: duration × 60, percent: conditionLimit }`; error without a positive `duration` or with `conditionLimit` outside (0, 100] |
+| `conditionUnit: "Times"` (with `Continual` or `Duration`) | `{ type: "count", n: conditionLimit }`. The window of `Duration` + `Times` cannot be expressed in v2 and is dropped |
+| `conditionUnit` missing (written by `/api/v2/sensor-rule`) | read as `Times` |
+| `conditionLimit` missing for `Times` | `n: 1`; a value that is not a positive integer is an error |
+| unknown `conditionUnit` or `conditionType` | error |
+| `no-data` condition | `{ operator: "no-data", noDataMinutes: duration × 60 }`; `value`, `conditionType`, `conditionUnit`, `conditionLimit` are ignored; error without a positive `duration` |
+| `controller-<id>` | `controllerId` from the metadata (or `controllerId`), `name` from `controllerName`, `value`; `enabled: false` only when `activate` is `false`. Missing `value` is an error |
+| `notification` `line` with `{ id_type, id_name }` (or `idType`, `idName`) | `notify: { type: "line", recipient }`; an object without a valid `id_type` / `id_name` is an error |
+| `notification` `line` with a string (a LINE Notify token) | no `notify`: LINE Notify has shut down |
+| `notification` `email` / `telegram` | `notify` with the string recipient; no `notify` when the value is empty |
+| `notification` without a type or with another type | no `notify` (the rule is still judged) |
+| other metadata | ignored |
 
 ## Upgrading from 0.3.x
 

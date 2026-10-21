@@ -129,7 +129,7 @@ The API publishes a message on `RULE_CHANGE_TOPIC` (`notifyEngine/ruleChange`) a
 
 ## Storage
 
-The storage layout is internal to the SDK; consumers only see `RuleObject`. Since 0.4.0 a rule is written as one definition item (`metadata: "definition"`, with `schemaVersion: 2`, `ownerId` and the whole `RuleObject`) plus one index item per referenced sensor (`metadata: "sensor#<sensorId>"`, with `sensorId`, and `condition: "no-data"` when a no-data condition uses the sensor), in the existing `SensorRule` table and its GSIs. The definition item carries no `sensorId` or `condition`, so it stays out of `sensorId-index` and `condition-index`; index items carry no `ownerId`, so they stay out of `ownerId-ruleId-index`. Items written by a newer schema version are refused rather than overwritten.
+The storage layout is internal to the SDK; consumers only see `RuleObject`. Since 0.4.1 a rule is written as one definition item (`metadata: "definition"`, with `schemaVersion: 2`, `ownerId` and the whole `RuleObject`) plus one index item per referenced sensor (`metadata: "sensor#<sensorId>"`, with `sensorId`, and `condition: "no-data"` when a no-data condition uses the sensor), in the existing `SensorRule` table and its GSIs. The definition item carries no `sensorId` or `condition`, so it stays out of `sensorId-index` and `condition-index`; index items carry no `ownerId`, so they stay out of `ownerId-ruleId-index`. Items written by a newer schema version are refused rather than overwritten.
 
 ### Reading legacy rules
 
@@ -164,7 +164,7 @@ Rules in the legacy layout (one item per `owner`, `name`, `ruleMode`, `minTrigge
 
 ## Upgrading from 0.3.x
 
-0.4.0 replaces `RuleObject` with the v2 object above (incompatible change). The 0.3.x functions keep their behaviour under new names, for consumers still built around the legacy object:
+0.4.0 replaces `RuleObject` with the v2 object above (incompatible change). The 0.3.x functions keep their behaviour under new names, for consumers still built around the legacy object. 0.4.0 shipped only the v2 types and validation; the storage layout (`fromDdbItems`, `isNewLayout`, `toWriteSet`), the queries and the Rule State arrived in 0.4.1 — depend on 0.4.1 or later.
 
 | 0.3.x | 0.4.0 |
 | --- | --- |
@@ -200,7 +200,7 @@ Use the prebuilt refs produced by the `Release Dist` workflow instead (no script
 
 ```bash
 # pinned version (recommended)
-npm i "git+ssh://git@github.com/crescendoCat/rule-transform-sdk.git#dist-v0.3.1"
+npm i "git+ssh://git@github.com/crescendoCat/rule-transform-sdk.git#dist-v0.4.1"
 # latest release
 npm i "git+ssh://git@github.com/crescendoCat/rule-transform-sdk.git#dist"
 ```
